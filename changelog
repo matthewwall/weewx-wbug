@@ -1,0 +1,25 @@
+0.7 14oct2015
+* update readme with weewx 3.x instructions
+
+0.6 24jul2015
+* obfuscate password in logs
+
+0.5 23jun2015
+* fixed bug in unit conversions when database is METRIC or METRICWX
+
+0.4 07dec2014
+* do not upload if no wind - weatherbug rejects these posts
+
+0.3 06dec2014
+* fixed units conversion bugs in outTempMin and outTempMax
+
+0.2 06dec2014
+* clean up comments and formatting
+* update to weewx v3
+* added support for soil moisture, soil temperature, leaf wetness
+* added support for radiation, UV, extraTemp, extraHumid
+* fixed rain aggregation periods
+* use utc for time span calculations
+
+0.1 01feb2014
+* initial release as packaged weewx extension
