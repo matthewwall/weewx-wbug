@@ -85,7 +85,7 @@ import weewx.restx
 import weewx.units
 from weeutil.weeutil import to_bool, accumulateLeaves, startOfDayUTC
 
-VERSION = "X"
+VERSION = "0.7"
 
 if weewx.__version__ < "3":
     raise weewx.UnsupportedFeature("weewx 3 is required, found %s" %
