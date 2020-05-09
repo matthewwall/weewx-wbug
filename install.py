@@ -1,8 +1,7 @@
-# $Id: install.py 1373 2015-10-14 13:50:32Z mwall $
 # installer for WeatherBug
-# Copyright 2014 Matthew Wall
+# Copyright 2014-2020 Matthew Wall
 
-from setup import ExtensionInstaller
+from weecfg.extension import ExtensionInstaller
 
 def loader():
     return WeatherBugInstaller()
@@ -10,7 +9,7 @@ def loader():
 class WeatherBugInstaller(ExtensionInstaller):
     def __init__(self):
         super(WeatherBugInstaller, self).__init__(
-            version="0.7",
+            version="0.8",
             name='wbug',
             description='Upload weather data to WeatherBug.',
             author="Matthew Wall",

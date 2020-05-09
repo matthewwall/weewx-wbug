@@ -1,3 +1,6 @@
+0.8 08may2020
+* Ported to Python 3 and WeeWX V4. -tk
+
 0.7 14oct2015
 * update readme with weewx 3.x instructions
 
