@@ -1,5 +1,4 @@
-# $Id: wbug.py 1343 2015-07-24 23:49:19Z mwall $
-# Copyright 2013 Matthew Wall
+# Copyright 2013-2020 Matthew Wall
 
 """
 This is a weewx extension that uploads data to WeatherBug.
@@ -71,37 +70,65 @@ http://data.backyard2.weatherbug.com/data/livedata.aspx?ID=P000001&Key=XXXXXX&nu
 # FIXME: the action parameter is ill-defined. since 'live' is never actually
 # the current time, technically everything is historical.
 
-import Queue
+try:
+    # Python 3
+    import queue
+except ImportError:
+    # Python 2
+    import Queue as queue
 import calendar
 import re
 import sys
-import syslog
 import time
-import urllib
-import urllib2
+try:
+    # Python 3
+    from urllib.parse import urlencode
+except ImportError:
+    # Python 2
+    from urllib import urlencode
+
 
 import weewx
 import weewx.restx
 import weewx.units
-from weeutil.weeutil import to_bool, accumulateLeaves, startOfDayUTC
+from weeutil.weeutil import startOfDayUTC
 
-VERSION = "0.7"
+VERSION = "0.8"
 
 if weewx.__version__ < "3":
     raise weewx.UnsupportedFeature("weewx 3 is required, found %s" %
                                    weewx.__version__)
 
-def logmsg(level, msg):
-    syslog.syslog(level, 'restx: WeatherBug: %s' % msg)
+try:
+    # Test for new-style weewx logging by trying to import weeutil.logger
+    import weeutil.logger
+    import logging
+    log = logging.getLogger(__name__)
 
-def logdbg(msg):
-    logmsg(syslog.LOG_DEBUG, msg)
+    def logdbg(msg):
+        log.debug(msg)
 
-def loginf(msg):
-    logmsg(syslog.LOG_INFO, msg)
+    def loginf(msg):
+        log.info(msg)
 
-def logerr(msg):
-    logmsg(syslog.LOG_ERR, msg)
+    def logerr(msg):
+        log.error(msg)
+
+except ImportError:
+    # Old-style weewx logging
+    import syslog
+
+    def logmsg(level, msg):
+        syslog.syslog(level, 'WeatherBug: %s' % msg)
+
+    def logdbg(msg):
+        logmsg(syslog.LOG_DEBUG, msg)
+
+    def loginf(msg):
+        logmsg(syslog.LOG_INFO, msg)
+
+    def logerr(msg):
+        logmsg(syslog.LOG_ERR, msg)
 
 def _get_rain(dbm, start_ts, end_ts):
     val = dbm.getSql("SELECT SUM(rain) FROM %s "
@@ -151,21 +178,17 @@ class WeatherBug(weewx.restx.StdRESTbase):
         """
         super(WeatherBug, self).__init__(engine, config_dict)
         loginf("service version is %s" % VERSION)
-        try:
-            site_dict = config_dict['StdRESTful']['WeatherBug']
-            site_dict = accumulateLeaves(site_dict, max_level=1)
-            site_dict['publisher_id']
-            site_dict['station_number']
-            site_dict['password']
-        except KeyError, e:
-            logerr("Data will not be posted: Missing option %s" % e)
+
+        site_dict = weewx.restx.get_site_dict(config_dict, 'WeatherBug', 'publisher_id',
+                                              'station_number', 'password')
+        if site_dict is None:
             return
         site_dict.setdefault('latitude', engine.stn_info.latitude_f)
         site_dict.setdefault('longitude', engine.stn_info.longitude_f)
         site_dict['manager_dict'] = weewx.manager.get_manager_dict(
             config_dict['DataBindings'], config_dict['Databases'], 'wx_binding')
 
-        self.archive_queue = Queue.Queue()
+        self.archive_queue = queue.Queue()
         self.archive_thread = WeatherBugThread(self.archive_queue, **site_dict)
         self.archive_thread.start()
         self.bind(weewx.NEW_ARCHIVE_RECORD, self.new_archive_record)
@@ -210,14 +233,14 @@ class WeatherBugThread(weewx.restx.RESTThread):
                  'humidity3':      ('extraHumid2', '%.0f'), # %
                  }
 
-    def __init__(self, queue,
+    def __init__(self, q,
                  publisher_id, station_number, password, latitude, longitude,
                  manager_dict,
                  server_url=_SERVER_URL, skip_upload=False,
-                 post_interval=None, max_backlog=sys.maxint, stale=None,
+                 post_interval=None, max_backlog=sys.maxsize, stale=None,
                  log_success=True, log_failure=True,
                  timeout=60, max_tries=3, retry_wait=5):
-        super(WeatherBugThread, self).__init__(queue,
+        super(WeatherBugThread, self).__init__(q,
                                                protocol_name='WeatherBug',
                                                manager_dict=manager_dict,
                                                post_interval=post_interval,
@@ -227,28 +250,20 @@ class WeatherBugThread(weewx.restx.RESTThread):
                                                log_failure=log_failure,
                                                max_tries=max_tries,
                                                timeout=timeout,
-                                               retry_wait=retry_wait)
+                                               retry_wait=retry_wait,
+                                               skip_upload=skip_upload)
         self.publisher_id = publisher_id
         self.station_number = station_number
         self.password = password
         self.latitude = float(latitude)
         self.longitude = float(longitude)
         self.server_url = server_url
-        self.skip_upload = to_bool(skip_upload)
-
-    def process_record(self, record, dbm):
-        r = self.get_record(record, dbm)
-        if 'windSpeed' not in r or r['windSpeed'] is None:
-            raise weewx.restx.FailedPost("No windSpeed in record")
-        url = self.get_url(r)
-        if self.skip_upload:
-            raise weewx.restx.FailedPost("Upload disabled for this service")
-        req = urllib2.Request(url)
-        req.add_header("User-Agent", "weewx/%s" % weewx.__version__)
-        self.post_with_retries(req)
 
     def get_record(self, record, dbm):
         rec = super(WeatherBugThread, self).get_record(record, dbm)
+        # Must have non-null windSpeed
+        if 'windSpeed' not in rec or rec['windSpeed'] is None:
+            raise weewx.restx.FailedPost("No windSpeed in record")
         # put everything into the right units
         rec = weewx.units.to_US(rec)
         # add the fields specific to weatherbug
@@ -284,7 +299,7 @@ class WeatherBugThread(weewx.restx.RESTThread):
             if not line.startswith('Successfully Received'):
                 raise weewx.restx.FailedPost("Server response: %s" % line)
 
-    def get_url(self, record):
+    def format_url(self, record):
         logdbg("record: %s" % record)
         # put data into expected structure and format
         values = { 'action':'live' }
@@ -298,7 +313,63 @@ class WeatherBugThread(weewx.restx.RESTThread):
             rkey = self._DATA_MAP[key][0]
             if rkey in record and record[rkey] is not None:
                 values[key] = self._DATA_MAP[key][1] % record[rkey]
-        url = self.server_url + '?' + urllib.urlencode(values)
+        url = self.server_url + '?' + urlencode(values)
         if weewx.debug >= 2:
             logdbg('url: %s' % re.sub(r"Key=[^\&]*", "Key=XXX", url))
         return url
+
+
+# Do direct testing of this extension like this:
+#   PYTHONPATH=WEEWX_BINDIR python WEEWX_BINDIR/user/wbug.py
+if __name__ == "__main__":
+    import optparse
+    import weewx.manager
+
+    weewx.debug = 2
+
+    try:
+        # WeeWX V4 logging
+        weeutil.logger.setup('wbug', {})
+    except NameError:
+        # WeeWX V3 logging
+        syslog.openlog('wbug', syslog.LOG_PID | syslog.LOG_CONS)
+        syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_DEBUG))
+
+    usage = """%prog --id=PUBLISHER-ID --station=STATION-NUMBER --pw=PASSWORD [--version] [--help]"""
+
+    parser = optparse.OptionParser(usage=usage)
+    parser.add_option('--version', dest='version', action='store_true',
+                      help='display driver version')
+    parser.add_option('--id', metavar='PUBLISHER-ID', help='Your publisher ID')
+    parser.add_option('--station', metavar='STATION-NUMBER', help='Station ID of station to upload')
+    parser.add_option('--pw', dest='pw', metavar='PASSWORD', help='your password')
+    (options, args) = parser.parse_args()
+
+    manager_dict = {
+        'manager': 'weewx.manager.DaySummaryManager',
+        'table_name': 'archive',
+        'schema': None,
+        'database_dict': {
+            'SQLITE_ROOT': '/home/weewx/archive',
+            'database_name': 'weewx.sdb',
+            'driver': 'weedb.sqlite'
+        }
+    }
+
+    if options.version:
+        print("meteotemplate uploader version %s" % VERSION)
+        exit(0)
+
+    print("uploading to station %s" % options.station)
+    q = queue.Queue()
+    t = WeatherBugThread(q, options.id, options.station, options.pw,
+                         45.0, -125.0, manager_dict)
+    t.start()
+    q.put({'dateTime': int(time.time() + 0.5),
+           'usUnits': weewx.US,
+           'outTemp': 32.5,
+           'inTemp': 75.8,
+           'outHumidity': 24,
+           'windSpeed': 3.2})
+    q.put(None)
+    t.join(20)
